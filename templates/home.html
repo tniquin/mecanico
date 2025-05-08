@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>MECANICO 👍</title>
+    <style>
+       body {
+        font-family: 'Arial', sans-serif;
+        text-align: center;
+        background-color: #f0f0f0;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        min-height: 100vh;
+}
+
+h2 {
+    color: #333;
+    margin-bottom: 20px;
+    animation: bounce-in 1.5s ease-in-out;
+
+}
+
+h1 {
+    color: #007bff;
+    font-size: 2.5em;
+    margin-bottom: 20px;
+    animation: bounce-in 1.5s ease-in-out;
+}
+
+h3 {
+    color: #3500a4;
+    font-size: 2.2em;
+    animation: bounce-in 1.5s ease-in-out;
+}
+
+@keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes bounce-in {
+    0% {
+        transform: translateY(-50px);
+        opacity: 0;
+    }
+    50% {
+        transform: translateY(10px);
+        opacity: 1;
+    }
+    100% {
+        transform: translateY(0);
+    }
+}
+
+    </style>
+</head>
+<body>
+    <h2>Bem-vindo à API da Oficina!</h2>
+    <h1>Acesse a URL e insira:</h1>
+    <h3>
+        <br>
+        /adicionarClientes
+        <br>
+        /listarClientes
+        <br>
+        /adicionarVeiculo
+        <br>
+        /listarVeiculos
+        <br>
+        /adicionarOrdemServico
+        <br>
+        /listarOrdemServicos
+        <br>
+        /BuscaClientes/id/IdDoCliente/servicos
+    </h3>
+
+</body>
+</html>

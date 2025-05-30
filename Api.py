@@ -1,13 +1,99 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify
 from sqlalchemy import select
+from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, JWTManager
+from functools import wraps
+from werkzeug.security import generate_password_hash, check_password_hash # Importe chec
+
 
 from models import *
 
 app = Flask(__name__)
+app.config['JWT_SECRET_KEY'] = '12345@Z'
+JWT = JWTManager(app)
+
+import random
+import string
+
+def gerar_codigo_aleatorio(tamanho=5):
+    caracteres = string.digits
+    codigo = ''.join(random.choice(caracteres) for _ in range(tamanho))
+    return codigo
+
+# Exemplo de uso:
+access_token = gerar_codigo_aleatorio()
+print(access_token)
+
+
+def admin_required(fn):
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        current_user = get_jwt_identity()
+        try:
+            sql = select(Usuario).where(Usuario.id == current_user)
+            usuario = db_session.execute(sql).scalar()
+            if usuario and usuario.papel == "admin":
+                return fn(*args, **kwargs)
+            return jsonify({"msg": "acesso negado, privilegio de administrador"}), 403
+        finally:
+            db_session.close()
+    return wrapped
+
+@app.route('/login', methods=['POST'])
+def login():
+    dados = request.get_json()
+    email = dados.get('email')
+    senha = dados.get('senha')
+
+    if not email or not senha:
+        return jsonify({"Msg": "Dados incompletos"}), 400
+
+    usuario = db_session.query(Usuario).filter_by(email=email).first()
+
+    if usuario and usuario.check_password(senha):
+        access_token = create_access_token(identity=usuario.nome)
+        return jsonify({'nome': usuario.nome, 'email': usuario.email, 'access_token': access_token}), 200
+
+    return jsonify({"Msg": "Credenciais inválidas"}), 401
 
 @app.route('/')
 def index():
-    return render_template("home.html")
+    return jsonify("Hello, World!")
+
+
+@app.route('/cadastro_usuario', methods=['POST'])
+def cadastro_usuario():
+    try:
+        dados_usuarios = request.get_json()
+
+        # Validação dos dados
+        if not all(key in dados_usuarios for key in ['nome', 'cpf', 'email', 'password', 'papel']):
+            return jsonify({"mensagem": "Dados inválidos ou incompletos"}), 400
+
+        novo_usuario = Usuario(
+            nome=dados_usuarios['nome'],
+            cpf=dados_usuarios['cpf'],
+            email=dados_usuarios['email'],
+            password=generate_password_hash(dados_usuarios['password']),  # Hash da senha
+            papel=dados_usuarios['papel'],
+        )
+
+        novo_usuario.save()
+        return jsonify({"mensagem": "Cliente cadastrado com sucesso"}), 201
+    except Exception as e:
+        print(f"Erro inesperado: {e}")
+        return jsonify({"mensagem": "Erro interno do servidor"}), 500
+
+
+@app.route('/listarUsuario', methods=['GET'])
+def listar_usuario():
+    try:
+        lista_usuarios = db_session.query(Usuario).all()
+        resultado = [usuarios.serialize() for usuarios in lista_usuarios]
+        return jsonify(resultado), 200
+    except Exception as e:
+        print(f"Erro ao listar usuario: {e}")
+        return jsonify({"mensagem": "Erro ao obter clientes"}), 500
+
 
 @app.route('/BuscaClientes/id/<int:cliente_id>/servicos', methods=['GET'])
 def get_servicos_cliente(cliente_id):
@@ -64,18 +150,32 @@ def adicionar_cliente():
         "endereco": "Centro 3"
         }
 
-
        ## Erros possíveis:
        "mensagem": Dados inválidos ou incompletos 400
-
+       "mensagem": CPF já cadastrado 409
+       "mensagem": Telefone já cadastrado 409
        "mensagem": Erro interno do servidor 500
-       """
+    """
     try:
         dados_cliente = request.get_json()
+
+        cpf = dados_cliente['cpf']
+        telefone = dados_cliente['telefone']
+
+        # Verifica se CPF já existe
+        cpf_existente = db_session.execute(select(Cliente).where(Cliente.cpf == cpf)).scalar()
+        if cpf_existente:
+            return jsonify({"mensagem": "CPF já cadastrado"}), 409
+
+        # Verifica se telefone já existe
+        telefone_existente = db_session.execute(select(Cliente).where(Cliente.telefone == telefone)).scalar()
+        if telefone_existente:
+            return jsonify({"mensagem": "Telefone já cadastrado"}), 409
+
         novo_cliente = Cliente(
             nome=dados_cliente['nome'],
-            cpf=dados_cliente['cpf'],
-            telefone=dados_cliente['telefone'],
+            cpf=cpf,
+            telefone=telefone,
             endereco=dados_cliente['endereco']
         )
         novo_cliente.save()
@@ -86,7 +186,6 @@ def adicionar_cliente():
     except Exception as e:
         print(f"Erro inesperado: {e}")
         return jsonify({"mensagem": "Erro interno do servidor"}), 500
-
 
 
 @app.route('/listarClientes', methods=['GET'])
@@ -155,10 +254,30 @@ def editar_clientes(cliente_id):
     cliente.nome = nome
     cliente.cpf = cpf
     cliente.telefone = telefone
-    cliente.Endereco = endereco
+    cliente.endereco = endereco
 
     cliente.save()
     return jsonify({"mensagem": "cliente editado com sucesso"})
+
+@app.route("/ocultarClient/<int:cliente_id>", methods=['PUT'])
+def ocultar_cliente(cliente_id):
+    cliente = db_session.execute(select(Cliente).where(Cliente.id_cliente == cliente_id)).scalar()
+
+    if cliente is None:
+        return jsonify({"mensagem": "Cliente não encontrado"}), 404
+
+    dados = request.get_json()
+    motivo = dados.get("motivo")
+
+    if not motivo:
+        return jsonify({"mensagem": "Motivo é obrigatório"}), 400
+
+    cliente.ativo = False
+    cliente.motivo_inativo = motivo
+
+    cliente.save()
+    return jsonify({"mensagem": "Cliente ocultado com sucesso"})
+
 
 @app.route("/deletarCliente/<int:cliente_id>", methods=['DELETE'])
 def deletar_cliente(cliente_id):
@@ -306,6 +425,7 @@ def veiculos(id_veiculo):
 
 @app.route('/adicionarOrdemServico', methods=['POST'])
 def adicionar_ordem_servico():
+#segurança
     """
             rota para adicionar uma Ordem de Servico
 
@@ -339,6 +459,7 @@ def adicionar_ordem_servico():
 
 
 @app.route('/listarOrdemServicos', methods=['GET'])
+#liberado
 def listar_ordem_servicos():
     """
             rota para listar uma Ordem Servico
@@ -369,6 +490,7 @@ def listar_ordem_servicos():
         return jsonify({"mensagem": "Erro ao obter ordens de serviço"}), 500
 
 @app.route("/editarServico/<int:id_servico>", methods=['PUT'])
+#segurança
 def editar_servico(id_servico):
     """
               rota para ediar uma Ordem de Servico
@@ -425,4 +547,4 @@ def deletar_servico(id_servico):
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, host="0.0.0.0", port=5000)

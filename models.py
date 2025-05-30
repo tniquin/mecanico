@@ -1,6 +1,7 @@
 from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Float, func
 from sqlalchemy.orm import relationship, sessionmaker, scoped_session
 from sqlalchemy.ext.declarative import declarative_base
+from werkzeug.security import generate_password_hash, check_password_hash
 
 engine = create_engine('sqlite:///mecanica.db')
 db_session = scoped_session(sessionmaker(bind=engine))
@@ -8,6 +9,49 @@ db_session = scoped_session(sessionmaker(bind=engine))
 Base = declarative_base()
 Base.query = db_session.query_property()
 
+
+class Usuario(Base):
+    __tablename__ = 'usuarios'
+    id = Column(Integer, primary_key=True)
+    nome = Column(String, nullable=False)
+    email = Column(String, nullable=False, unique=True)
+    cpf = Column(String(11), nullable=False, unique=True)
+    password = Column(String, nullable=False)
+    papel = Column(String, nullable=False)
+
+    def set_password(self, password):
+        self.password = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password, password)
+
+
+    def __repr__(self):
+        return (f'<Usuario(id={self.id},'
+                f' nome={self.nome},'
+                f' email={self.email},'
+                f' cpf={self.cpf},'
+                f' password={self.password}'
+                f' papel={self.papel})>')
+
+
+    def save(self):
+        db_session.add(self)
+        db_session.commit()
+
+    def delete(self):
+        db_session.delete(self)
+        db_session.commit()
+
+    def serialize(self):
+        return {
+            "id": self.id,
+            "nome": self.nome,
+            "cpf": self.cpf,
+            "password": self.password,
+            "email": self.email,
+            "papel": self.papel,
+        }
 
 class Cliente(Base):
     __tablename__ = 'clientes'
@@ -19,7 +63,7 @@ class Cliente(Base):
     veiculos = relationship('Veiculo', backref='proprietario', lazy=True)
 
     def __repr__(self):
-        return f'<Cliente(id={self.id_cliente}, nome={self.nome}, cpf={self.cpf})>'
+        return f'<Cliente(id={self.id_cliente}, nome={self.nome}, cpf={self.cpf}, endereco={self.endereco})>'
 
     def save(self):
         db_session.add(self)
@@ -50,7 +94,11 @@ class Veiculo(Base):
     ordens_servico = relationship('OrdemServico', backref='veiculo', lazy=True)
 
     def __repr__(self):
-        return f'<Veiculo(id={self.id_veiculo}, placa={self.placa}, modelo={self.modelo})>'
+        return (f'<Veiculo(id={self.id_veiculo},'
+                f' placa={self.placa},'
+                f' modelo={self.modelo},'
+                f' ano_fabricacao={self.ano_fabricacao}'
+                f' cliente_id={self.cliente_id})>')
 
     def save(self):
         db_session.add(self)

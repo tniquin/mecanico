@@ -1,8 +1,8 @@
 from flask import Flask, request, jsonify
 from sqlalchemy import select
-from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, JWTManager
+from flask_jwt_extended import create_access_token, get_jwt_identity, JWTManager
 from functools import wraps
-from werkzeug.security import generate_password_hash, check_password_hash # Importe chec
+
 
 
 from models import *
@@ -10,19 +10,6 @@ from models import *
 app = Flask(__name__)
 app.config['JWT_SECRET_KEY'] = '12345@Z'
 JWT = JWTManager(app)
-
-import random
-import string
-
-def gerar_codigo_aleatorio(tamanho=5):
-    caracteres = string.digits
-    codigo = ''.join(random.choice(caracteres) for _ in range(tamanho))
-    return codigo
-
-# Exemplo de uso:
-access_token = gerar_codigo_aleatorio()
-print(access_token)
-
 
 def admin_required(fn):
     @wraps(fn)
@@ -43,15 +30,16 @@ def login():
     dados = request.get_json()
     email = dados.get('email')
     senha = dados.get('senha')
+    nome = dados.get('nome')
 
-    if not email or not senha:
+    if not email or not senha or not nome:
         return jsonify({"Msg": "Dados incompletos"}), 400
 
     usuario = db_session.query(Usuario).filter_by(email=email).first()
 
     if usuario and usuario.check_password(senha):
         access_token = create_access_token(identity=usuario.nome)
-        return jsonify({'nome': usuario.nome, 'email': usuario.email, 'access_token': access_token}), 200
+        return jsonify({'nome': usuario.nome, 'email': usuario.email, 'senha': usuario.senha, 'access_token': access_token}), 200
 
     return jsonify({"Msg": "Credenciais inválidas"}), 401
 
@@ -87,7 +75,7 @@ def cadastro_usuario():
 @app.route('/listarUsuario', methods=['GET'])
 def listar_usuario():
     try:
-        lista_usuarios = db_session.query(Usuario).all()
+        lista_usuarios = db_session.execute(Usuario).all()
         resultado = [usuarios.serialize() for usuarios in lista_usuarios]
         return jsonify(resultado), 200
     except Exception as e:

@@ -1,15 +1,14 @@
 from flask import Flask, request, jsonify
 from sqlalchemy import select
-from flask_jwt_extended import create_access_token, get_jwt_identity, JWTManager
+from flask_jwt_extended import create_access_token, get_jwt_identity, JWTManager, jwt_required
 from functools import wraps
-
-
-
-from models import *
-
+from BancoDeDadosMecanica import *
+from datetime import datetime
 app = Flask(__name__)
 app.config['JWT_SECRET_KEY'] = '12345@Z'
 JWT = JWTManager(app)
+
+
 
 def admin_required(fn):
     @wraps(fn)
@@ -17,31 +16,59 @@ def admin_required(fn):
         current_user = get_jwt_identity()
         try:
             sql = select(Usuario).where(Usuario.id == current_user)
+            print("Usuário autenticado ID:", current_user)
             usuario = db_session.execute(sql).scalar()
             if usuario and usuario.papel == "admin":
                 return fn(*args, **kwargs)
+            print("Token gerado para ID:", usuario.id)
+
             return jsonify({"msg": "acesso negado, privilegio de administrador"}), 403
         finally:
             db_session.close()
     return wrapped
+# permite acesso se o usuário for o dono dos dados OU for admin.
+#def owner_or_admin_required(param_id_name):
+    #def decorator(fn):
+        #@wraps(fn)
+        #def wrapper(*args, **kwargs):
+            #user_id = get_jwt_identity()
+           # recurso_id = kwargs.get(param_id_name)
+
+           # try:
+             #   usuario = db_session.query(Usuario).get(user_id)
+              #  if not usuario:
+              #      return jsonify({"mensagem": "Usuário inválido"}), 401
+
+              #  if usuario.papel == 'admin' or int(user_id) == int(recurso_id):
+               #     return fn(*args, **kwargs)
+
+               # return jsonify({"mensagem": "Acesso negado: não é dono nem admin"}), 403
+
+         #   finally:
+             #   db_session.close()
+   #     return wrapper
+ #  return decorator
 
 @app.route('/login', methods=['POST'])
 def login():
     dados = request.get_json()
     email = dados.get('email')
     senha = dados.get('senha')
-    nome = dados.get('nome')
 
-    if not email or not senha or not nome:
-        return jsonify({"Msg": "Dados incompletos"}), 400
+    if not email or not senha:
+        return jsonify({"msg": "Dados incompletos"}), 400
 
     usuario = db_session.query(Usuario).filter_by(email=email).first()
 
     if usuario and usuario.check_password(senha):
-        access_token = create_access_token(identity=usuario.nome)
-        return jsonify({'nome': usuario.nome, 'email': usuario.email, 'senha': usuario.senha, 'access_token': access_token}), 200
+        access_token = create_access_token(identity=str(usuario.id))  # <-- string aqui!
+        return jsonify({
+            'nome': usuario.nome,
+            'email': usuario.email,
+            'access_token': access_token
+        }), 200
 
-    return jsonify({"Msg": "Credenciais inválidas"}), 401
+    return jsonify({"msg": "Credenciais inválidas"}), 401
 
 @app.route('/')
 def index():
@@ -53,29 +80,33 @@ def cadastro_usuario():
     try:
         dados_usuarios = request.get_json()
 
-        # Validação dos dados
-        if not all(key in dados_usuarios for key in ['nome', 'cpf', 'email', 'password', 'papel']):
-            return jsonify({"mensagem": "Dados inválidos ou incompletos"}), 400
+        campos_obrigatorios = ['nome', 'cpf', 'email', 'password']
+        for campo in campos_obrigatorios:
+            if campo not in dados_usuarios or not dados_usuarios[campo]:
+                return jsonify({"mensagem": f"Campo '{campo}' é obrigatório."}), 400
 
         novo_usuario = Usuario(
             nome=dados_usuarios['nome'],
             cpf=dados_usuarios['cpf'],
             email=dados_usuarios['email'],
-            password=generate_password_hash(dados_usuarios['password']),  # Hash da senha
+            password=generate_password_hash(dados_usuarios['password']),
             papel=dados_usuarios['papel'],
         )
 
         novo_usuario.save()
-        return jsonify({"mensagem": "Cliente cadastrado com sucesso"}), 201
+        return jsonify({"mensagem": "Usuário cadastrado com sucesso"}), 201
+
     except Exception as e:
+        db_session.rollback()
         print(f"Erro inesperado: {e}")
-        return jsonify({"mensagem": "Erro interno do servidor"}), 500
+        return jsonify({"mensagem": f"Erro interno: {str(e)}"}), 500
 
 
 @app.route('/listarUsuario', methods=['GET'])
+@jwt_required()
 def listar_usuario():
     try:
-        lista_usuarios = db_session.execute(Usuario).all()
+        lista_usuarios = db_session.execute(select(Usuario)).scalars().all()
         resultado = [usuarios.serialize() for usuarios in lista_usuarios]
         return jsonify(resultado), 200
     except Exception as e:
@@ -84,35 +115,8 @@ def listar_usuario():
 
 
 @app.route('/BuscaClientes/id/<int:cliente_id>/servicos', methods=['GET'])
+@jwt_required()
 def get_servicos_cliente(cliente_id):
-    """
-       rota para buscar o cliente (filtro para buscar o servico cadastrado do cliente)
-
-       ## Endpoint:
-       /BuscaClientes/id/cliente_id/servicos
-
-       ## Parâmetros:
-       cliente_id: id do cliente
-
-       ## Resposta (JSON):
-	    {
-		"data_abertura": "2025-07-26",
-		"descricao_servico": "Limpeza",
-		"id_servico": 2,
-		"status": "Aberto",
-		"valor_estimado": 150,
-		"veiculo_id": 1
-	    }
-       ```
-
-       ## Erros possíveis:
-       se o valor for errado ou não existe error 500
-       ```json
-       {
-           "erro": "Formato de data inválido. string
-       }
-       ```
-       """
     try:
         servicos = OrdemServico.query.join(Veiculo).filter(
             Veiculo.cliente_id == cliente_id
@@ -121,41 +125,43 @@ def get_servicos_cliente(cliente_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/alterarStatusCliente/<int:id_cliente>', methods=['PATCH'])
+def alterar_status_cliente(id_cliente):
+    try:
+        cliente = db_session.query(Cliente).filter(Cliente.id_cliente == id_cliente).first()
+
+        if not cliente:
+            return jsonify({"mensagem": "Cliente não encontrado"}), 404
+
+        # Inverte o status
+        cliente.ativo = not cliente.ativo
+
+        db_session.commit()
+        return jsonify({"mensagem": "Status do cliente alterado com sucesso", "ativo": cliente.ativo}), 200
+
+    except Exception as e:
+        print(f"Erro ao alterar status do cliente: {e}")
+        return jsonify({"mensagem": "Erro interno do servidor"}), 500
 
 @app.route('/adicionarClientes', methods=['POST'])
 def adicionar_cliente():
-    """
-       rota para adicionar um cliente
-
-       ## Endpoint:
-       /adicionarClientes
-
-       ## Resposta (JSON):
-        {
-        "nome": "slaMan",
-        "cpf": "12445674310",
-        "telefone": "12291422138",
-        "endereco": "Centro 3"
-        }
-
-       ## Erros possíveis:
-       "mensagem": Dados inválidos ou incompletos 400
-       "mensagem": CPF já cadastrado 409
-       "mensagem": Telefone já cadastrado 409
-       "mensagem": Erro interno do servidor 500
-    """
     try:
         dados_cliente = request.get_json()
+
+        campos_obrigatorios = ["nome", "cpf", "telefone", "endereco"]
+        for campo in campos_obrigatorios:
+            if campo not in dados_cliente or not dados_cliente[campo].strip():
+                return jsonify({"mensagem": f"Campo '{campo}' é obrigatório e não pode estar vazio."}), 400
 
         cpf = dados_cliente['cpf']
         telefone = dados_cliente['telefone']
 
-        # Verifica se CPF já existe
+        # Verificar se o CPF já existe
         cpf_existente = db_session.execute(select(Cliente).where(Cliente.cpf == cpf)).scalar()
         if cpf_existente:
             return jsonify({"mensagem": "CPF já cadastrado"}), 409
 
-        # Verifica se telefone já existe
+        # Verificar se o telefone já existe
         telefone_existente = db_session.execute(select(Cliente).where(Cliente.telefone == telefone)).scalar()
         if telefone_existente:
             return jsonify({"mensagem": "Telefone já cadastrado"}), 409
@@ -168,36 +174,18 @@ def adicionar_cliente():
         )
         novo_cliente.save()
         return jsonify({"mensagem": "Cliente cadastrado com sucesso"}), 201
+
     except (TypeError, KeyError) as e:
         print(f"Erro ao adicionar cliente: {e}")
         return jsonify({"mensagem": "Dados inválidos ou incompletos"}), 400
+
     except Exception as e:
         print(f"Erro inesperado: {e}")
         return jsonify({"mensagem": "Erro interno do servidor"}), 500
 
-
 @app.route('/listarClientes', methods=['GET'])
+@jwt_required()
 def listar_clientes():
-    """
-       rota para adicionar listar o cliente
-
-       ## Endpoint:
-       /listarClientes
-
-       ## Resposta (JSON):
-        {
-		"cpf": "12345674310",
-		"endereco": "Centro 3",
-		"id_cliente": 1,
-		"nome": "pedro",
-		"telefone": "18291422138"
-	    }
-
-
-       ## Erros possíveis:
-       "mensagem": Erro interno do servidor 500
-
-       """
     try:
         lista_clientes = db_session.query(Cliente).all()
         resultado = [cliente.serialize() for cliente in lista_clientes]
@@ -206,46 +194,25 @@ def listar_clientes():
         print(f"Erro ao listar clientes: {e}")
         return jsonify({"mensagem": "Erro ao obter clientes"}), 500
 
-
 @app.route("/editarClients/<int:cliente_id>", methods=['PUT'])
 def editar_clientes(cliente_id):
-    """
-       rota para editar um cliente
-
-       ## Endpoint:
-       /editarClients/cliente_id
-
-       ## Resposta (JSON):
-        {
-	    "nome": "ruyDaoter",
-	    "cpf": "22345674310",
-	    "telefone": "18991423132",
-	    "endereco": "rua paubaixo"
-        }
-
-
-       ## Erros possíveis:
-        mensagem: Usuario não encontrado 404
-
-       """
-    cliente = db_session.execute(select(Cliente).where(Cliente.id_cliente == cliente_id)).scalar()
+    cliente = db_session.execute(
+        select(Cliente).where(Cliente.id_cliente == cliente_id)
+    ).scalar()
 
     if cliente is None:
-        return jsonify({"mensagem": "Usuario nõo encontrado"})
+        return jsonify({"mensagem": "Cliente não encontrado"}), 404
 
     dados_cliente = request.get_json()
-    nome = dados_cliente['nome']
-    cpf = dados_cliente['cpf']
-    telefone = dados_cliente['telefone']
-    endereco = dados_cliente['endereco']
+    print("Dados recebidos:", dados_cliente)  # DEBUG
 
-    cliente.nome = nome
-    cliente.cpf = cpf
-    cliente.telefone = telefone
-    cliente.endereco = endereco
+    cliente.nome = dados_cliente['nome']
+    cliente.cpf = dados_cliente['cpf']
+    cliente.telefone = dados_cliente['telefone']
+    cliente.endereco = dados_cliente['endereco']
 
-    cliente.save()
-    return jsonify({"mensagem": "cliente editado com sucesso"})
+    db_session.commit()  # em vez de cliente.save()
+    return jsonify({"mensagem": "cliente editado com sucesso"}), 200
 
 @app.route("/ocultarClient/<int:cliente_id>", methods=['PUT'])
 def ocultar_cliente(cliente_id):
@@ -286,28 +253,13 @@ def deletar_cliente(cliente_id):
 
 @app.route('/adicionarVeiculo', methods=['POST'])
 def adicionar_veiculo():
-    """
-             rota para adicionar um Veiculo
-
-             ## Endpoint:
-             /adicionarVeiculo
-
-             ## Resposta (JSON):
-             {
-	            "mensagem": "Veículo cadastrado com sucesso"
-            }
-
-
-             ## Erros possíveis:
-
-
-             "mensagem": Erro interno do servidor 500
-
-             "mensagem": Dados inválidos ou incompletos 400
-
-             """
     try:
+
         dados_veiculo = request.get_json()
+        campos_obrigatorios = ["cliente_id", "marca", "modelo", "placa", "ano_fabricacao"]
+        for campo in campos_obrigatorios:
+            if campo not in dados_veiculo or not dados_veiculo[campo].strip():
+                return jsonify({"mensagem": f"Campo '{campo}' é obrigatório e não pode estar vazio."}), 400
         novo_veiculo = Veiculo(
             cliente_id=dados_veiculo['cliente_id'],
             marca=dados_veiculo['marca'],
@@ -327,32 +279,8 @@ def adicionar_veiculo():
 
 
 @app.route('/listarVeiculos', methods=['GET'])
+@jwt_required()
 def listar_veiculos():
-    """
-                rota para listar um veiculo
-
-                ## Endpoint:
-                /listarVeiculos
-
-                ## Resposta (JSON):
-                {
-                    "ano_fabricacao": 2008,
-                    "cliente_id": 1,
-                    "id_veiculo": 2,
-                    "marca": "Volkswagen",
-                    "modelo": "Gol G4",
-                    "placa": "OsRlq444"
-                }
-
-
-                ## Erros possíveis:
-
-
-                "mensagem": Erro ao obter veiculos 500
-
-
-
-                """
     try:
         lista_veiculos = db_session.query(Veiculo).all()
         resultado = [veiculo.serialize() for veiculo in lista_veiculos]
@@ -364,17 +292,6 @@ def listar_veiculos():
 
 @app.route("/editarVeiculos/<int:id_veiculo>", methods=['PUT'])
 def editar_veiculos(id_veiculo):
-    """
-            rota para editar um Veiculo
-
-                 ## Endpoint:
-                 /editarVeiculos/id_veiculo
-
-                 ## Resposta (JSON):
-                 {
-                    "mensagem": "veiculo editado com sucesso"
-                }
-    """
     veiculos = db_session.execute(select(Veiculo).where(Veiculo.id_veiculo == id_veiculo)).scalar()
 
     if veiculos is None:
@@ -395,7 +312,7 @@ def editar_veiculos(id_veiculo):
     return jsonify({"mensagem": "veiculo editado com sucesso"})
 
 @app.route("/deletarVeiculos/<int:id_veiculo>", methods=['DELETE'])
-def veiculos(id_veiculo):
+def deletar_veiculo(id_veiculo):
     try:
         veiculo = db_session.query(Veiculo).get(id_veiculo)
         if veiculo is None:
@@ -409,35 +326,27 @@ def veiculos(id_veiculo):
 
 
 
-
-
 @app.route('/adicionarOrdemServico', methods=['POST'])
 def adicionar_ordem_servico():
-#segurança
-    """
-            rota para adicionar uma Ordem de Servico
-
-                 ## Endpoint:
-                 /adicionarOrdemServico
-
-                 ## Resposta (JSON):
-                 mensagem": "Ordem de serviço cadastrada com sucesso"
-
-                 ## Erros possíveis:
-                 400 invalido
-                 500 erro interno
-    """
     try:
         dados_ordem = request.get_json()
+
+        # Converte string para objeto datetime
+        try:
+            data_abertura = datetime.strptime(dados_ordem['data_abertura'], "%Y-%m-%d")
+        except ValueError:
+            return jsonify({"mensagem": "Formato de data inválido. Use AAAA-MM-DD"}), 400
+
         nova_ordem = OrdemServico(
-            veiculo_id=dados_ordem['veiculo_id'],
-            data_abertura=dados_ordem['data_abertura'],
+            veiculo_id=int(dados_ordem['veiculo_id']),
+            data_abertura=data_abertura,
             descricao_servico=dados_ordem['descricao_servico'],
             status=dados_ordem['status'],
             valor_estimado=dados_ordem['valor_estimado']
         )
         nova_ordem.save()
         return jsonify({"mensagem": "Ordem de serviço cadastrada com sucesso"}), 201
+
     except (TypeError, KeyError) as e:
         print(f"Erro ao adicionar ordem de serviço: {e}")
         return jsonify({"mensagem": "Dados inválidos ou incompletos"}), 400
@@ -445,30 +354,9 @@ def adicionar_ordem_servico():
         print(f"Erro ao adicionar ordem de serviço: {e}")
         return jsonify({"mensagem": "Erro interno do servidor"}), 500
 
-
 @app.route('/listarOrdemServicos', methods=['GET'])
-#liberado
+@jwt_required()
 def listar_ordem_servicos():
-    """
-            rota para listar uma Ordem Servico
-
-                 ## Endpoint:
-                 /listarOrdemServicos
-
-                 ## Resposta (JSON):
-                 {
-                    "data_abertura": "2025-07-26",
-                    "descricao_servico": "Troca de óleo e filtro e consertar o lataria",
-                    "id_servico": 1,
-                    "status": "Fechado",
-                    "valor_estimado": 750,
-                    "veiculo_id": 2
-                }
-
-
-                 ## Erros possíveis:
-                 500 erro ao obter ordens de servico
-    """
     try:
         lista_ordens = db_session.query(OrdemServico).all()
         resultado = [ordem.serialize() for ordem in lista_ordens]
@@ -477,48 +365,40 @@ def listar_ordem_servicos():
         print(f"Erro ao listar ordens de serviço: {e}")
         return jsonify({"mensagem": "Erro ao obter ordens de serviço"}), 500
 
+
 @app.route("/editarServico/<int:id_servico>", methods=['PUT'])
-#segurança
 def editar_servico(id_servico):
-    """
-              rota para ediar uma Ordem de Servico
-
-                   ## Endpoint:
-                   /editarServico/id_Servico
-
-                   ## Resposta (JSON):
-                   {
-                      "data_abertura": "2025-07-26",
-                      "descricao_servico": "Troca de óleo e filtro e consertar o lataria",
-                      "id_servico": 1,
-                      "status": "Fechado",
-                      "valor_estimado": 750,
-                      "veiculo_id": 2
-                  }
-
-
-    """
-
-    ordens_servico = db_session.execute(select(OrdemServico).where(OrdemServico.id_servico == id_servico)).scalar()
+    # Busca a ordem de serviço pelo id
+    ordens_servico = db_session.execute(
+        select(OrdemServico).where(OrdemServico.id_servico == id_servico)
+    ).scalar()
 
     if ordens_servico is None:
-        return jsonify({"mensagem": "Serviço nõo encontrado"})
+        return jsonify({"mensagem": "Serviço não encontrado"}), 404
 
     dados_ordem = request.get_json()
-    data_abertura = dados_ordem['data_abertura']
-    descricao_servico = dados_ordem['descricao_servico']
-    status = dados_ordem['status']
-    valor_estimado = dados_ordem['valor_estimado']
 
-    ordens_servico.data_abertura = data_abertura
-    ordens_servico.descricao_servico = descricao_servico
-    ordens_servico.status = status
-    ordens_servico.valor_estimado = valor_estimado
+    try:
+        data_str = dados_ordem.get('data_abertura', '').strip()
+        if data_str:
+            data_str = data_str.split("T")[0]
+            ordens_servico.data_abertura = datetime.strptime(data_str, "%Y-%m-%d").date()
+        else:
+            ordens_servico.data_abertura = None
 
-    ordens_servico.save()
-    return jsonify({"mensagem": "Serviço editado com sucesso"})
+        ordens_servico.descricao_servico = dados_ordem['descricao_servico']
+        ordens_servico.status = dados_ordem['status']
+        ordens_servico.valor_estimado = float(dados_ordem['valor_estimado'])
 
+        if ordens_servico.status.lower() in ["concluído", "finalizado"]:
+            ordens_servico.data_fechamento = datetime.utcnow()
 
+        ordens_servico.save()
+        return jsonify({"mensagem": "Serviço editado com sucesso"}), 200
+
+    except (KeyError, ValueError, TypeError) as err:
+        print(f"Erro ao editar serviço: {err}")
+        return jsonify({"mensagem": "Erro nos dados enviados"}), 400
 @app.route("/deletarServico/<int:id_servico>", methods=['DELETE'])
 def deletar_servico(id_servico):
     try:

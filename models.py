@@ -56,11 +56,12 @@ class Cliente(Base):
     cpf = Column(String(11), unique=True, nullable=False)
     telefone = Column(String(20), nullable=False)
     endereco = Column(String(200), nullable=False)
+    email = Column(String(100), nullable=False, unique=True)
     ativo = Column(Boolean, default=True)
     veiculos = relationship('Veiculo', backref='proprietario', lazy=True)
 
     def __repr__(self):
-        return f'<Cliente(id={self.id_cliente}, nome={self.nome}, cpf={self.cpf}, endereco={self.endereco})>'
+        return f'<Cliente(id={self.id_cliente}, email={self.email}, nome={self.nome}, cpf={self.cpf}, endereco={self.endereco})>'
 
     def serialize(self):
         return {
@@ -69,6 +70,9 @@ class Cliente(Base):
             "cpf": self.cpf,
             "telefone": self.telefone,
             "endereco": self.endereco,
+            "email": self.email,
+            "ativo": self.ativo,
+            "motivo_inativo": getattr(self, "motivo_inativo", None),  # se existir
         }
 
     def save(self):
@@ -129,11 +133,12 @@ class OrdemServico(Base):
         return {
             "id_servico": self.id_servico,
             "veiculo_id": self.veiculo_id,
-            "data_abertura": self.data_abertura.isoformat() if self.data_abertura else None,
+            "data_abertura": self.data_abertura.strftime("%d-%m-%Y %H:%M") if self.data_abertura else None,
             "descricao_servico": self.descricao_servico,
             "status": self.status,
             "valor_estimado": self.valor_estimado,
-            "data_fechamento": self.data_fechamento.isoformat() if self.data_fechamento else None  # <---
+            "data_fechamento": self.data_fechamento.strftime("%d-%m-%Y %H:%M") if self.data_fechamento else None
+
         }
 
     def save(self):

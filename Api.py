@@ -3,10 +3,15 @@ from sqlalchemy import select
 from flask_jwt_extended import create_access_token, get_jwt_identity, JWTManager, jwt_required
 from functools import wraps
 from BancoDeDadosMecanica import *
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+from pytz import timezone
 app = Flask(__name__)
 app.config['JWT_SECRET_KEY'] = '12345@Z'
 JWT = JWTManager(app)
+
+
+BRASILIA = timezone('America/Sao_Paulo')
+
 
 
 
@@ -61,7 +66,13 @@ def login():
     usuario = db_session.query(Usuario).filter_by(email=email).first()
 
     if usuario and usuario.check_password(senha):
-        access_token = create_access_token(identity=str(usuario.id))  # <-- string aqui!
+        # Aqui você inclui CPF e papel no payload do token
+        payload = {
+            "id": usuario.id,
+            "cpf": usuario.cpf,
+            "role": usuario.papel
+        }
+        access_token = create_access_token(identity=payload)
         return jsonify({
             'nome': usuario.nome,
             'email': usuario.email,
@@ -69,6 +80,7 @@ def login():
         }), 200
 
     return jsonify({"msg": "Credenciais inválidas"}), 401
+
 
 @app.route('/')
 def index():
@@ -103,7 +115,6 @@ def cadastro_usuario():
 
 
 @app.route('/listarUsuario', methods=['GET'])
-@jwt_required()
 def listar_usuario():
     try:
         lista_usuarios = db_session.execute(select(Usuario)).scalars().all()
@@ -115,7 +126,6 @@ def listar_usuario():
 
 
 @app.route('/BuscaClientes/id/<int:cliente_id>/servicos', methods=['GET'])
-@jwt_required()
 def get_servicos_cliente(cliente_id):
     try:
         servicos = OrdemServico.query.join(Veiculo).filter(
@@ -148,7 +158,8 @@ def adicionar_cliente():
     try:
         dados_cliente = request.get_json()
 
-        campos_obrigatorios = ["nome", "cpf", "telefone", "endereco"]
+        campos_obrigatorios = ["nome", "cpf", "telefone", "endereco", "email"]
+
         for campo in campos_obrigatorios:
             if campo not in dados_cliente or not dados_cliente[campo].strip():
                 return jsonify({"mensagem": f"Campo '{campo}' é obrigatório e não pode estar vazio."}), 400
@@ -166,12 +177,20 @@ def adicionar_cliente():
         if telefone_existente:
             return jsonify({"mensagem": "Telefone já cadastrado"}), 409
 
+        # Verificar se o e-mail já existe
+        email = dados_cliente['email']
+        email_existente = db_session.execute(select(Cliente).where(Cliente.email == email)).scalar()
+        if email_existente:
+            return jsonify({"mensagem": "E-mail já cadastrado"}), 409
+
         novo_cliente = Cliente(
             nome=dados_cliente['nome'],
             cpf=cpf,
             telefone=telefone,
-            endereco=dados_cliente['endereco']
+            endereco=dados_cliente['endereco'],
+            email=email
         )
+
         novo_cliente.save()
         return jsonify({"mensagem": "Cliente cadastrado com sucesso"}), 201
 
@@ -184,7 +203,6 @@ def adicionar_cliente():
         return jsonify({"mensagem": "Erro interno do servidor"}), 500
 
 @app.route('/listarClientes', methods=['GET'])
-@jwt_required()
 def listar_clientes():
     try:
         lista_clientes = db_session.query(Cliente).all()
@@ -210,6 +228,7 @@ def editar_clientes(cliente_id):
     cliente.cpf = dados_cliente['cpf']
     cliente.telefone = dados_cliente['telefone']
     cliente.endereco = dados_cliente['endereco']
+    cliente.email = dados_cliente['email']
 
     db_session.commit()  # em vez de cliente.save()
     return jsonify({"mensagem": "cliente editado com sucesso"}), 200
@@ -232,6 +251,21 @@ def ocultar_cliente(cliente_id):
 
     cliente.save()
     return jsonify({"mensagem": "Cliente ocultado com sucesso"})
+
+
+
+@app.route("/reativarCliente/<int:cliente_id>", methods=["PUT"])
+def reativar_cliente(cliente_id):
+    cliente = db_session.execute(select(Cliente).where(Cliente.id_cliente == cliente_id)).scalar()
+
+    if cliente is None:
+        return jsonify({"mensagem": "Cliente não encontrado"}), 404
+
+    cliente.ativo = True
+    cliente.motivo_inativo = None
+    cliente.save()
+
+    return jsonify({"mensagem": "Cliente reativado com sucesso"}), 200
 
 
 @app.route("/deletarCliente/<int:cliente_id>", methods=['DELETE'])
@@ -279,7 +313,6 @@ def adicionar_veiculo():
 
 
 @app.route('/listarVeiculos', methods=['GET'])
-@jwt_required()
 def listar_veiculos():
     try:
         lista_veiculos = db_session.query(Veiculo).all()
@@ -325,37 +358,121 @@ def deletar_veiculo(id_veiculo):
         return jsonify({"message": f"Erro ao excluir veiculo: {str(e)}"}), 500
 
 
+@app.route("/buscar_cpf_por_email", methods=["GET"])
+def buscar_cpf_por_email():
+    try:
+        email_usuario = request.args.get("email")  # recebe email via parâmetro na URL
+
+        if not email_usuario:
+            return jsonify({"mensagem": "Email não fornecido"}), 400
+
+        usuario = db_session.execute(
+            select(Usuario).where(Usuario.email == email_usuario)
+        ).scalar()
+
+        if usuario is None:
+            return jsonify({"mensagem": "Usuário não encontrado"}), 404
+
+        return jsonify({"cpf": usuario.cpf}), 200
+
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 500
+
+@app.route("/dados_cliente/<cpf>", methods=["GET"])
+def dados_cliente(cpf):
+    try:
+        cliente = db_session.execute(
+            select(Cliente).where(Cliente.cpf == cpf)
+        ).scalar()
+
+        if not cliente:
+            return jsonify({"mensagem": "Cliente não encontrado"}), 404
+
+        veiculo = db_session.execute(
+            select(Veiculo).where(Veiculo.cliente_id == cliente.id_cliente)
+        ).scalar()
+
+        ordem = None
+        if veiculo:
+            ordem = db_session.execute(
+                select(OrdemServico).where(OrdemServico.veiculo_id == veiculo.id_veiculo)
+            ).scalar()
+
+        return jsonify({
+            "nome": cliente.nome,
+            "cpf": cliente.cpf,
+            "veiculo": {
+                "marca": veiculo.marca if veiculo else "",
+                "modelo": veiculo.modelo if veiculo else "",
+            },
+            "ordem_servico": {
+                "status": ordem.status if ordem else "",
+                "data_abertura": ordem.data_abertura.isoformat() if ordem and ordem.data_abertura else "",
+                "data_fechamento": ordem.data_fechamento.isoformat() if ordem and ordem.data_fechamento else ""
+            }
+        })
+
+    except Exception as e:
+        print(f"Erro na rota dados_cliente: {e}")
+        return jsonify({"erro": str(e)}), 500
+
+
+@app.route('/veiculo_cliente/<cpf>', methods=['GET'])
+def buscar_veiculo_por_cpf(cpf):
+    try:
+        # Primeiro busca o cliente pelo CPF
+        cliente = db_session.query(Cliente).filter_by(cpf=cpf).first()
+        if not cliente:
+            return jsonify({"mensagem": "Cliente não encontrado"}), 404
+
+        # Depois busca os veículos desse cliente
+        veiculos = db_session.query(Veiculo).filter_by(cliente_id=cliente.id_cliente).all()
+
+        if not veiculos:
+            return jsonify({"mensagem": "Nenhum veículo encontrado"}), 404
+
+        # Se quiser retornar só o primeiro veículo:
+        return jsonify(veiculos[0].serialize()), 200
+
+        # Ou todos os veículos do cliente:
+        # return jsonify([v.serialize() for v in veiculos]), 200
+
+    except Exception as e:
+        print(f"Erro ao buscar veículo por CPF: {e}")
+        return jsonify({"mensagem": "Erro interno do servidor"}), 500
+
 
 @app.route('/adicionarOrdemServico', methods=['POST'])
 def adicionar_ordem_servico():
     try:
         dados_ordem = request.get_json()
 
-        # Converte string para objeto datetime
-        try:
-            data_abertura = datetime.strptime(dados_ordem['data_abertura'], "%Y-%m-%d")
-        except ValueError:
-            return jsonify({"mensagem": "Formato de data inválido. Use AAAA-MM-DD"}), 400
+        agora_brasilia = datetime.now(BRASILIA).replace(tzinfo=None)
 
         nova_ordem = OrdemServico(
             veiculo_id=int(dados_ordem['veiculo_id']),
-            data_abertura=data_abertura,
+            data_abertura=agora_brasilia,
             descricao_servico=dados_ordem['descricao_servico'],
             status=dados_ordem['status'],
-            valor_estimado=dados_ordem['valor_estimado']
+            valor_estimado=float(dados_ordem['valor_estimado']),
+            data_fechamento=(
+                agora_brasilia if dados_ordem['status'].lower() in ["concluído", "finalizado", "terminado"]
+                else None
+            )
         )
+
         nova_ordem.save()
         return jsonify({"mensagem": "Ordem de serviço cadastrada com sucesso"}), 201
 
-    except (TypeError, KeyError) as e:
+    except (TypeError, KeyError, ValueError) as e:
         print(f"Erro ao adicionar ordem de serviço: {e}")
         return jsonify({"mensagem": "Dados inválidos ou incompletos"}), 400
     except Exception as e:
         print(f"Erro ao adicionar ordem de serviço: {e}")
         return jsonify({"mensagem": "Erro interno do servidor"}), 500
 
+
 @app.route('/listarOrdemServicos', methods=['GET'])
-@jwt_required()
 def listar_ordem_servicos():
     try:
         lista_ordens = db_session.query(OrdemServico).all()
@@ -368,7 +485,6 @@ def listar_ordem_servicos():
 
 @app.route("/editarServico/<int:id_servico>", methods=['PUT'])
 def editar_servico(id_servico):
-    # Busca a ordem de serviço pelo id
     ordens_servico = db_session.execute(
         select(OrdemServico).where(OrdemServico.id_servico == id_servico)
     ).scalar()
@@ -379,19 +495,34 @@ def editar_servico(id_servico):
     dados_ordem = request.get_json()
 
     try:
-        data_str = dados_ordem.get('data_abertura', '').strip()
+        data_str = dados_ordem.get('data_abertura')
+
         if data_str:
-            data_str = data_str.split("T")[0]
-            ordens_servico.data_abertura = datetime.strptime(data_str, "%Y-%m-%d").date()
-        else:
-            ordens_servico.data_abertura = None
+            try:
+                # Tenta converter string ISO para datetime com timezone
+                dt = datetime.fromisoformat(data_str)
+                if dt.tzinfo is None:
+                    dt = BRASILIA.localize(dt)
+                else:
+                    dt = dt.astimezone(BRASILIA)
+                ordens_servico.data_abertura = dt.replace(tzinfo=None)
+            except Exception:
+                data_apenas = data_str.split("T")[0]
+                dt = datetime.strptime(data_apenas, "%Y-%m-%d")
+                dt = BRASILIA.localize(dt).replace(tzinfo=None)
+                ordens_servico.data_abertura = dt
 
         ordens_servico.descricao_servico = dados_ordem['descricao_servico']
         ordens_servico.status = dados_ordem['status']
         ordens_servico.valor_estimado = float(dados_ordem['valor_estimado'])
 
-        if ordens_servico.status.lower() in ["concluído", "finalizado"]:
-            ordens_servico.data_fechamento = datetime.utcnow()
+        status_lower = ordens_servico.status.lower()
+        if status_lower in ["concluído", "finalizado", "terminado"]:
+            if not ordens_servico.data_fechamento:
+                agora_brasilia = datetime.now(BRASILIA).replace(tzinfo=None)
+                ordens_servico.data_fechamento = agora_brasilia
+        else:
+            ordens_servico.data_fechamento = None
 
         ordens_servico.save()
         return jsonify({"mensagem": "Serviço editado com sucesso"}), 200
@@ -399,6 +530,20 @@ def editar_servico(id_servico):
     except (KeyError, ValueError, TypeError) as err:
         print(f"Erro ao editar serviço: {err}")
         return jsonify({"mensagem": "Erro nos dados enviados"}), 400
+    except Exception as err:
+        print(f"Erro inesperado: {err}")
+        return jsonify({"mensagem": "Erro interno do servidor"}), 500
+
+@app.route("/ordens_por_veiculo/<int:veiculo_id>", methods=["GET"])
+def ordens_por_veiculo(veiculo_id):
+    try:
+        ordens = db_session.query(OrdemServico).filter_by(veiculo_id=veiculo_id).all()
+        return jsonify([o.serialize() for o in ordens]), 200
+    except Exception as e:
+        print(f"Erro ao buscar ordens por veículo: {e}")
+        return jsonify({"mensagem": "Erro interno"}), 500
+
+
 @app.route("/deletarServico/<int:id_servico>", methods=['DELETE'])
 def deletar_servico(id_servico):
     try:

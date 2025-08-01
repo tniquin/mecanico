@@ -5,7 +5,7 @@ from functools import wraps
 from models import *
 from datetime import datetime
 from pytz import timezone
-#
+##
 app = Flask(__name__)
 app.config['JWT_SECRET_KEY'] = '12345@Z'
 JWT = JWTManager(app)

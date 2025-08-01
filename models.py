@@ -3,7 +3,7 @@ from sqlalchemy.orm import relationship, sessionmaker, scoped_session
 from sqlalchemy.ext.declarative import declarative_base
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
-#
+##
 engine = create_engine('sqlite:///mecanica.db')
 db_session = scoped_session(sessionmaker(bind=engine))
 
